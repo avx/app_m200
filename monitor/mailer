@@ -1,0 +1,49 @@
+#!/bin/sh
+
+action=$1
+m200ip=$2
+city=$3
+arg=$4
+
+case "$action" in
+	pcm_down)
+		subject="$city [$m200ip] PCM $arg IS DOWN";
+		text="pcm $arg is down!"
+
+	;;
+	pcm_normal)
+		subject="$city [$m200ip] PCM $arg STAY NORMAL";
+		text="pcm $arg stay normal!"
+
+	;;
+	pcm_error)
+		subject="$city [$m200ip] PCM $arg ACTIVE ERRORS";
+		text="active errors in pcm $arg!"
+
+	;;
+	scomm_link_down)
+		subject="$city [$m200ip] SCOMM Link Down";
+		text="scomm lost m200!"
+		exit;
+	;;
+	scomm_link_up)
+		subject="$city [$m200ip] SCOMM Link Up";
+		text="scomm connected to m200"
+		exit;
+	;;
+
+	*)
+	echo "no action";
+	exit;
+esac
+
+sub=`echo $subject | base64 -w 0`
+
+sendmail cuss@domain.com << EOF 
+From: M200 MONITOR <no-reply@domain.com>
+Subject: =?UTF-8?B?$sub?=
+
+$text
+---
+http://m200.monitor
+EOF

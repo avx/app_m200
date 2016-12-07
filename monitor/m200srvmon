@@ -1,0 +1,222 @@
+#!/usr/bin/env node
+
+var configFile="./m200.json";
+var timeout=6000;
+
+///
+
+var request = require('request');
+var exec = require('child_process').exec;
+var sys = require('sys');
+var fs = require('fs');
+var io = require('socket.io')(1201); //, {'transports': ['websocket']});
+
+var m200srv={};
+var m200web={};
+
+var mailer_enabled=0;
+
+//var ii=0;
+//var iiv=[];
+//iiv[0]='error';
+//iiv[1]='down';
+//iiv[2]='error';
+//iiv[3]='down';
+//setInterval(function() { 
+//	m200srv['10.166.2.6:6200'].status.pcmstatus[2].status=iiv[ii];
+//	console.dir(m200srv['10.166.2.6:6200'].status.pcmstatus[2].status=iiv[ii]);
+//	console.log('ii='+iiv[ii]);
+//	ii=(ii+1)%4;
+//},6000);
+
+function sendmail(action,m200ip,city,arg) {
+	if (mailer_enabled) {
+		console.log("./mailer "+action+" "+m200ip+" '"+city+"' "+arg);
+		exec("./mailer "+action+" "+m200ip+" '"+city+"' "+arg);
+	}
+}
+
+io.sockets.on('connection', function (socket) {
+	var address = socket.handshake.address;
+	console.log("new connection from " + address);
+	socket.emit('m200',m200web);
+});
+
+function puts(error, stdout, stderr) { 
+	sys.puts(stdout); 
+}
+
+fs.readFile(configFile, 'utf8', function (err,data) {
+	if (err)
+		return console.log(err);
+
+	console.log('Configuration file loaded');
+	m200web=JSON.parse(data);
+	for (e in m200web)
+		m200srv[e]={};
+
+	setTimeout(function() { mailer_enabled=1; }, 65000);
+
+	var c=0;
+	for (var i in m200srv) c++;
+
+	var dadd = timeout/c;
+
+	var delay=0;
+	for (var i in m200srv) {
+		setTimeout(function(i) { req(i,"/cfg","cfg"); },delay,i);
+		setTimeout(function(i) { req(i,"/status","status"); },delay,i);
+		delay=delay+dadd;
+	}
+
+//	setTimeout(upd_m200web,5000);
+	setInterval(upd_m200web,10000);
+});
+
+function req(hp,path,e) {
+//	console.log('req('+hp+' '+path+' '+e+')');
+	request("http://"+hp+path, function(error, response, body) {
+		var delay=timeout;
+		if (!('req_error' in m200srv[hp]))
+			m200srv[hp].req_error=0;
+		if (body) {
+			m200srv[hp][e]=JSON.parse(body)
+			m200srv[hp].req_error=0;
+			if (e=='cfg') delay=300000;
+		}
+		if (error) {
+			m200srv[hp].req_error++;
+		}
+		setTimeout(function(i) { req(hp,path,e); },delay);
+	});
+}
+
+function setv(n,w,v) {
+	if (n in w) {
+		if (w[n]!=v) {
+			w[n]=v;
+			return 1;
+		}
+	}
+	else {
+		w[n]=v;
+		return 1;
+	}
+	return 0;
+}
+
+function upd_m200web() {
+//	console.log("upd_m200web()")
+	var emits=0;
+	for (e in m200web) {
+		var emit=0;
+		var done=0;
+
+		m200web[e].req_error=m200srv[e].req_error;
+		if (m200srv[e].req_error>0) {
+			if (m200web[e].error!=-1)
+				emit+=1;
+			m200web[e].error=-1;
+			console.log('request error for '+e);
+			done=1;
+		}
+		else {
+			if (m200web[e].error==-1) emit+=1;
+			m200web[e].error=0;
+		}
+
+		if (!done)
+			if (!('cfg' in m200srv[e]) || !('status' in m200srv[e]) || !('common' in m200srv[e].cfg) || !('m200' in m200srv[e].cfg)  || !('scomm' in m200srv[e].cfg) || !('scomm' in m200srv[e].status)) {
+				console.log('error - not cfg or status in m200srv['+e+']');
+				console.dir(m200srv[e]);
+				continue;
+			}
+
+		emit=emit+setv('name',m200web[e],m200srv[e].cfg.common.caption);
+		emit=emit+setv('m200ip',m200web[e],m200srv[e].cfg.m200.ip);
+		emit=emit+setv('scomm_ip',m200web[e],m200srv[e].cfg.scomm.ip);
+		emit=emit+setv('scomm_port',m200web[e],m200srv[e].cfg.scomm.port);
+
+		var pstatus=m200web[e].status;
+		emit=emit+setv('status',m200web[e],m200srv[e].status.scomm.Link);
+
+		if (pstatus!='' && m200web[e].status!='' && m200web[e].status!=pstatus) {
+			if (m200web[e].status=='Up')
+				sendmail('scomm_link_up',m200web[e].m200ip,m200web[e].name,'');
+			if (m200web[e].status=='Down')
+			sendmail('scomm_link_down',m200web[e].m200ip,m200web[e].name,'');
+		}
+
+		if (!('pcmstatus' in m200web[e])) {
+			m200web[e].pcmstatus={};
+			emit+=1;
+		}
+
+		if ('m200' in m200srv[e].cfg) {
+			if ('pcms' in m200srv[e].cfg.m200) {
+				var pcm=1;
+				while (pcm <= m200srv[e].cfg.m200.pcms) {
+					if ('status' in m200srv[e])
+						if ('pcmstatus' in m200srv[e].status)
+							if (pcm in m200srv[e].status.pcmstatus)
+								if (setv(pcm,m200web[e].pcmstatus,m200srv[e].status.pcmstatus[pcm].status)) {
+									if (m200web[e].pcmstatus[pcm]=='normal')
+										sendmail('pcm_normal',m200web[e].m200ip,m200web[e].name,pcm);
+									if (m200web[e].pcmstatus[pcm]=='down')
+										sendmail('pcm_down',m200web[e].m200ip,m200web[e].name,pcm);
+									if (m200web[e].pcmstatus[pcm]=='error')
+										sendmail('pcm_error',m200web[e].m200ip,m200web[e].name,pcm);
+
+									emit+=1;
+								}
+					pcm++;
+				}
+			}
+		}
+
+		var overload=0;
+		if (!('overload' in m200web[e])) m200web[e].overload=0;
+
+		if ('groupinfo' in m200srv[e].status) {
+			for (group in m200srv[e].status.groupinfo) {
+				if (group=='_timestamp') continue;
+				var cic=m200srv[e].status.groupinfo[group].split('/');
+				if (cic[0]==cic[1]) {
+					overload++;
+				}
+			}
+			if (overload>0) {
+				if (m200web[e].overload==0) {
+//					console.log(overload+' '+m200web[e].overload);
+					emit+=1;
+					m200web[e].overload=1;
+				}
+			}
+			else {
+				if (m200web[e].overload==1) {
+//					console.log(overload+' '+m200web[e].overload);
+					emit+=1;
+					m200web[e].overload=0;
+				}
+			}
+		}
+
+		if (emit>0) {
+			var obj={};
+			obj[e]=m200web[e];
+			io.sockets.emit('m200',obj);
+			emits++;
+		}
+	}
+
+	if (emits>0) {
+		fs.writeFile(configFile, JSON.stringify(m200web, null, 4), function(err) {
+			if(err) {
+				console.log(err);
+			}
+			else {
+				console.log('saved m200web to '+configFile);
+			}
+		}); 
+	}
+}

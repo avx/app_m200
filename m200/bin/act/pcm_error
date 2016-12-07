@@ -1,0 +1,15 @@
+#!/bin/sh
+
+exit 0;
+city="ARM"
+m200="10.123.2.200"
+url="10.123.2.6"
+exit;
+sendmail m200 << EOF 
+From: M200 MONITOR <no-reply@enforta.com>
+Subject: $city $m200 PCM $1 ACTIVE ERR
+
+active errors in pcm $1!
+---
+$url
+EOF

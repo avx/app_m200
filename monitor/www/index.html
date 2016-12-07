@@ -1,0 +1,227 @@
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf8">
+<style>
+body { text-align: center; font-family: Ubuntu, Verdana, Tahoma, Arial, sans-serif; margin-bottom: 50px; }
+h1 { text-align: center; }
+table { border: solid 1px grey; margin-left:auto; margin-right:auto; }
+.a { background: #eeeeee; }
+.b { background: #ffffff; }
+.wait { color: #000000; }
+.off { color: #aaaaaa; }
+.off:hover { color: #000000; }
+.linkup { color: #00cc00; }
+.linkup:hover { color: #00ff00; }
+.linkdown { color: #cc0000; }
+.linkdown:hover { color: #ff0000; }
+.scomm { background: #efbbbb; }
+.m200 { background: #bbbbef; }
+.app { background: #bbbbef; }
+tr { height: 25px; vertical-align:top; }
+a { text-decoration: none; }
+a:hover { color: #000000; }
+a:link { color: #0000aa; }
+a:visited { color: #0000aa; }
+td { padding-left: 5px; padding-right: 5px; }
+table tr.even td {
+    background: rgb(248,248,248);
+    background-color: rgba(0, 0, 0, 0.04);
+}
+table tr:nth-child(even) {
+    background: rgb(248,248,248);
+    background-color: rgba(0, 0, 0, 0.04);
+}
+
+th { padding-left: 5px; padding-right: 5px; }
+.rtt_na { font-weight: bold; color: #ff0000; }
+.rtt_big { color: #ffaaaa; }
+.rtt_big:hover { color: #ff0000; }
+.rtt { color: #aaaaaa; }
+.rtt:hover { color: #000000; }
+.pcm_red { display: inline-block; margin-bottom: 0px; margin-top:2px; margin-left:1px; margin-right:1px; border: 1px solid #000000; width: 15px; height: 15px; background-color: #ff0000; }
+.pcm_green { display: inline-block; margin-bottom: 0px; margin-top:2px; margin-left:1px; margin-right:1px; border: 1px solid #000000; width: 15px; height: 15px; background-color: #00ff00; }
+.pcm_yellow { display: inline-block; margin-bottom: 0px; margin-top:2px; margin-left:1px; margin-right:1px; border: 1px solid #000000; width: 15px; height: 15px; background-color: #ffff00; }
+.pcm_grey { display: inline-block; margin-bottom: 0px; margin-top:2px; margin-left:1px; margin-right:1px; border: 1px solid #000000; width: 15px; height: 15px; background-color: #bbbbbb; }
+.si {
+    white-space: nowrap; /* Отменяем перенос текста */
+}
+.si2 {
+    white-space: nowrap; /* Отменяем перенос текста */
+    overflow: hidden; /* Обрезаем содержимое */
+    padding: 5px; /* Поля */
+    text-overflow: ellipsis; /* Многоточие */
+}
+.lost {
+    background-color: #ffdddd !important;
+}
+.si2:hover {
+background: #f0f0f0; /* Цвет фона */
+white-space: normal; /* Обычный перенос текста */
+}
+.invisible {
+	display: none;
+	visibility: hidden;
+}
+
+</style>
+	<script type="text/javascript" src="js/jquery-1.11.1.min.js"></script>
+	<script type="text/javascript" src="js/jquery.dataTables.min.js"></script>
+	<script type="text/javascript" src="js/socket.io-1.2.0.js"></script>
+
+	<script type="text/javascript">
+	var t;
+	var dataSet;
+	var connected=0;
+
+	var dataSet = [];
+	var lt = {};
+
+	var pcm_class = {"normal":"pcm_green","error":"pcm_yellow","protected":"pcm_grey","down":"pcm_red"};
+
+	var s = io.connect(':1201',{ transports: ['websocket']});
+	s.on('connect',function() { 
+		connected=1; 
+		$("tbody#content").html(""); 
+		console.log("connected to server"); 
+	});
+
+	var i=0;
+
+        s.on('m200',function(data) {
+		console.log(data);
+		for (var e in data) {
+			if (e in lt) {
+				dataSet[lt[e]]=data[e];
+				dataSet[lt[e]].id=e;
+			}
+			else {
+				dataSet[i]=data[e];
+				dataSet[i].id=e;
+				lt[e]=i;
+				i++;
+			}
+		}
+		redraw();
+	});
+
+	s.on('disconnect', function() { 
+		connected=0;
+		console.log("disconnected from server");
+	});
+	s.on('error', function() { });
+
+	function redraw() {
+		if (typeof t != 'undefined') {
+			t.fnClearTable(0);
+			t.fnAddData(dataSet); 
+			t.fnDraw(); 
+
+		}
+	}
+
+jQuery.extend( jQuery.fn.dataTableExt.oSort, {
+    "ip-address-pre": function ( a ) {
+        var m = a.split("."), x = "";
+ 
+        for(var i = 0; i < m.length; i++) {
+            var item = m[i];
+            if(item.length == 1) {
+                x += "00" + item;
+            } else if(item.length == 2) {
+                x += "0" + item;
+            } else {
+                x += item;
+            }
+        }
+ 
+        return x;
+    },
+ 
+    "ip-address-asc": function ( a, b ) {
+        return ((a < b) ? -1 : ((a > b) ? 1 : 0));
+    },
+ 
+    "ip-address-desc": function ( a, b ) {
+        return ((a < b) ? 1 : ((a > b) ? -1 : 0));
+    }
+} );
+
+	$(document).ready(function() {
+		$('#content').html('<table cellpadding="0" cellspacing="0" border="0" class="display" id="m200s"><thead><tr><th colspan=4 class=m200>М200</th><th colspan=4 class=scomm>SCOMM</th></tr><tr><th width=220px class=m200></th><th width=80px class=m200></th><th width=330px class=m200></th><th width=120px class=m200></th><th width=100px class=scomm></th><th width=30px class=scomm></th><th width=90px class=scomm></th></tr></thead></table>');
+		t = $('#m200s').dataTable({
+			asStripeClasses: [],
+			bFilter: false, 
+			bInfo: false, 
+			paging: false,
+			"processing": false,
+			"deferRender": false,
+			"searching": false, 
+			"order": [[ 2, "desc" ], [3,"desc"]],
+			"data": dataSet,
+			"fnRowCallback": function( nRow, aData, iDisplayIndex ) {
+//				console.log(nRow);
+				if (aData.error==-1 || aData.status!='Up' || aData.overload==1) 
+				{
+					console.log(nRow);
+					console.log(iDisplayIndex);
+					console.log(aData);
+					nRow.className="lost";
+				}
+			},
+			"aoColumns": [
+				{ "data":"name", "title": "Город", "class":"si",
+				  "mRender": function(obj,display,e) {
+					return "<b><a href=http://"+e.id+">"+obj+"</a></b>";
+				  } 
+				},
+				{ "data":"m200ip", "title": "IP адрес", "class":"", 
+				  'sType': 'ip-address',
+				  "mRender": function(obj,display,e) {
+					return obj;
+				  } 
+				},
+				{ "data":"pcmstatus", 
+				  "title": "Потоки ИКМ", 
+				  "class":"",
+				  "mRender": function(obj,display,e) {
+					var sReturn='';
+					var alarm=0;
+					if (e.error!=-1)
+					for (pcm in obj) {
+						sReturn=sReturn+"<div id=pcm"+pcm+" class="+pcm_class[obj[pcm]]+"></div>";
+						if (obj[pcm]=='down') alarm+=10;
+						if (obj[pcm]=='error') alarm+=1;
+					}
+					return '<div class=invisible>'+alarm+'</div>'+sReturn;
+				  } 
+				},
+				{ "data":"overload", "title": "Группы КИ", "class": "center", "class":"",
+				  "mRender": function(obj) {
+					if (obj)
+						return '<b><font color=red>ПЕРЕГРУЗКА!</font></b>';
+					return '';
+				  } 
+				},
+				{ "data":"scomm_ip", "title": "IP адрес", "class": "center",'sType': 'ip-address' },
+				{ "data":"scomm_port", "title": "Порт", "class": "center" },
+				{ "data":"status", "title": "Статус", "class": "center",
+				  "mRender": function(obj,display,e) {
+					if (e.error==-1)
+						return 'неизвестно';
+					return '';
+				  } 
+				}
+			]
+		} );
+	} );
+//	setInterval(function () { redraw(); },1000);
+    </script>
+</head>
+
+<body>
+<h2>АТС M-200</h2>
+
+<div id="content">
+</div>
+</body>
+</html>

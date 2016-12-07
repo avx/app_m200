@@ -1,0 +1,571 @@
+#!/usr/local/m200/bin/python3
+import tornado.websocket
+import tornado.ioloop
+import configparser
+import tornado.web
+import functools
+import pprint
+import atexit
+import signal
+import socket
+import errno
+import json
+import time
+import sys
+import os
+import re
+
+def exit():
+	calllog("*** >calloff ***")
+
+def act(sec,opt):
+	if cfg.has_option(sec,opt):
+		try:
+			(file,arg)=cfg[sec][opt].split(' ',1)
+		except:
+			file=cfg[sec][opt]
+			arg=""
+		if os.path.isfile(file) and os.access(file, os.X_OK):
+			os.system(cfg[sec][opt])
+			log(6,"exec: "+cfg[sec][opt])
+
+class Log():
+	def __init__(self):
+		self.ll=int(cfg['common']['loglevel'])
+		self.openfile()
+
+	def openfile(self):
+		self.logfile=open(cfg['path']['logs']+"/m200srv."+cfg['m200']['ip']+".log","a")
+		sys.stdout = self.logfile
+		sys.stderr = self.logfile
+
+	def __call__(self,ll,*args):
+		if ll>self.ll:
+			return
+
+		if self.logfile.closed:
+			self.openfile()
+
+		msg=''
+		for arg in args:
+			msg=msg+str(arg)
+
+		print (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())+": "+msg)
+		sys.stdout.flush()
+	
+# lambda *args: None
+class Calllog():
+	def __init__(self):
+		self.do=1
+		if not cfg.getboolean('common','calllog'):
+			self.do=0
+			return
+		
+		self.ymd="";
+		self.openfile()
+	
+	def closefile(self):
+		self.logfile.close()
+
+	def openfile(self):
+		self.ymd=time.strftime("%Y-%m-%d",time.localtime())
+		self.logfile=open(cfg['path']['logs']+"/calls/"+cfg['m200']['ip']+"_"+self.ymd+".log","a")
+		
+	def __call__(self,*args):
+		if not self.do:
+			return
+
+		date=time.strftime("%Y-%m-%d",time.localtime())
+		if date!=self.ymd:
+			self.closefile()
+			self.openfile()
+		
+		if self.logfile.closed:
+			self.openfile()
+
+		msg=''
+		for arg in args:
+			msg=msg+str(arg)
+
+		msg=msg.replace("\r","")
+		self.logfile.write(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())+": "+msg+"\n")
+		self.logfile.flush()
+		
+class ConfigParser(configparser.SafeConfigParser):
+	def __init__(self,file):
+		configparser.ConfigParser.__init__(self,defaults={'caption':'','descr':''},
+									comment_prefixes=('#',';'),
+									inline_comment_prefixes=('#',';'),
+									interpolation=configparser.ExtendedInterpolation())
+
+		defaults={'common':{'loglevel':'2','calllog':'yes'},'m200':{'pcms':'16'}}
+
+		mandatory= {'common':{'caption','loglevel','calllog'},
+				'm200':{'ip','port'},
+				'scomm':{'ip','port','infoport','protv'},
+				'web':{'listen','port','title'},
+				'path':{'root','scomm','www','logs'}}
+
+		if not os.path.isfile(file):
+			sys.exit('ERR: there is no such file %s' % file)
+	
+		try:
+			self.read(file)
+		except:
+			sys.exit ('ERR: can not read configuration file %s' % file)
+
+		for sec in mandatory:
+			if not self.has_section(sec):
+				sys.exit('ERR Configuration file: section [%s] is mandatory!' % sec)
+			else:
+				for opt in mandatory[sec]:
+					if not self.has_option(sec,opt):
+						sys.exit('ERR Configuration file: option %s is mandatory in section [%s]!' % (opt,sec))
+
+		for sec in self.sections():
+			for opt in self.options(sec):
+				if self[sec][opt].startswith('"') and self[sec][opt].endswith('"'):
+					self[sec][opt] = self[sec][opt][1:-1]
+
+		for sec in defaults:
+			if not self.has_section(sec):
+				self[sec]={}
+			for opt in defaults[sec]:
+				if not self.has_option(sec,opt):
+					self[sec][opt]=defaults[sec][opt]
+
+		self.cfg_D={}
+		self.cfg_D['_timestamp']=time.strftime("%s", time.localtime())
+	
+		for sec in self.sections():
+			self.cfg_D[sec]={}
+			for opt in self.options(sec):
+				self.cfg_D[sec][opt]=self[sec][opt]
+
+	def __str__(self):
+		return json.dumps(self.cfg_D)
+
+class M200():
+	global cfg
+	def __init__(self,host='127.0.0.1',port=10001,infoport=11001,protv=11):
+		self.SCOMM_HOST=host
+		self.SCOMM_PORT=port
+		self.SCOMM_INFOPORT=port+1000
+		self.SCOMM_PROTV=protv
+		self.overload=0
+		self.infoport_connection_error=-1
+		self.scomm={}
+		self.groupinfo={}
+		self.pcmstatus={}
+		self.scomm_get_info()
+		self.connect()
+		self.pcm=0
+
+	def scomm_start(self):
+		log (8,"scomm_start()")
+		os.system(cfg['path']['scomm']+" "+cfg['m200']['ip']+" 10000 "+str(self.SCOMM_PORT)+" -infoport "+str(self.SCOMM_INFOPORT)+" -protv "+str(self.SCOMM_PROTV)+" -logfile /usr/local/m200/log/scomm."+cfg['m200']['ip']+".log -d > /dev/null 2>&1")
+		if 'Status' in self.scomm:
+			del self.scomm['Status']
+		return 1
+
+	def scomm_stop(self):
+		log (8,"scomm_stop()")
+		if self.scomm:
+			if 'Pid' in self.scomm:
+				os.system("kill -9 "+m200.scomm['Pid'])
+				self.scomm={}
+				self.scomm['Status']="stopped"
+				return 1
+			return 0
+
+	def scomm_get_info(self):
+		tornado.ioloop.IOLoop.current().add_timeout(time.time() + 5, lambda:self.scomm_get_info())
+		try:
+			s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			s.connect((self.SCOMM_HOST, int(self.SCOMM_INFOPORT)))
+			if self.infoport_connection_error>0:
+				act("scomm","act_started")
+			self.infoport_connection_error=0
+
+		except socket.error as e:
+			if self.infoport_connection_error==0:
+				act("scomm","act_stopped")
+			self.infoport_connection_error+=1
+			if e.errno == errno.ECONNREFUSED:
+				log (1,"Couldn't connect to "+self.SCOMM_HOST+":"+str(self.SCOMM_INFOPORT)+"...")
+				return
+			else:
+				log (5,sys.exc_info())
+
+		done=0
+
+		while 1:
+			if done:
+				break
+
+			data = s.recv(1024).decode('ascii')
+
+			if (len(data)<=0):
+				return -1
+				break
+                
+			if 'Connected' in self.scomm:
+				del self.scomm['Connected']
+
+			for string in data.split('\n'):
+				k=string.split(':')
+				if (len(k)==2):
+					if k[0]=='Connected' and k[0] in self.scomm.keys():
+						self.scomm[k[0]]=self.scomm[k[0]]+";"+k[1]
+					else:
+						self.scomm[k[0]]=k[1]
+				else:
+					r = re.match("Link(Up|Down)",k[0])
+					if r:
+						if 'Link' in self.scomm and self.scomm['Link']!=r.group(1):
+							# link changed to ...
+							if r.group(1)=='Up':
+								act("scomm","act_link_up")
+							if r.group(1)=='Down':
+								act("scomm","act_link_down")
+
+							self.scomm['LastLinkChanged']=time.strftime("%s", time.localtime())
+						self.scomm['Link']=r.group(1)
+					done=1
+					break
+
+			self.scomm['_timestamp']=time.strftime("%s", time.localtime())
+			s.close()
+			log (8,self.scomm)
+
+	def connect(self):
+		try:
+			self.sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.sc.connect((self.SCOMM_HOST, int(self.SCOMM_PORT)))
+			self.sc.setblocking(0)
+		except ConnectionRefusedError:
+			log (3,'Could not connect to '+self.SCOMM_HOST+':'+str(self.SCOMM_PORT))
+			tornado.ioloop.IOLoop.current().add_timeout(time.time() + 15, lambda:self.connect())
+			return
+
+		log (6,self.sc.fileno())
+
+		io_loop = tornado.ioloop.IOLoop.current()
+		callback = functools.partial(self.recv_from_scomm, self.sc)
+		io_loop.add_handler(self.sc.fileno(), callback, io_loop.READ)
+
+		self.groupinfo_request()
+		self.pcmstatus_request()
+		if cfg.getboolean('common','calllog'):
+			self.sc.send(b'callon\r\n')
+		else:
+			self.sc.send(b'calloff\r\n')
+
+	def disconnect(self):
+		self.sc.close()
+
+	def groupinfo_request(self):
+		log (12,"groupinfo_request")
+		tornado.ioloop.IOLoop.current().add_timeout(time.time() + 15, lambda:self.groupinfo_request())
+		if self.overload: 
+			try:
+				self.sc.send(b'pcmstatus 1\r\npcmstatus 2\r\npcmstatus 3\r\npcmstatus 4\r\npcmstatus 5\r\npcmstatus 6\r\npcmstatus 7\r\npcmstatus 8\r\npcmstatus 9\r\npcmstatus 10\r\npcmstatus 11\r\npcmstatus 12\r\npcmstatus 13\r\npcmstatus 14\r\npcmstatus 15\r\npcmstatus 16\r\npcmstatus 17\r\n')
+			except:
+				log (8,"groupinfo_request() self.sc.send exception")
+		self.overload=0
+		try:
+			self.sc.send(b'groupinfo\r\r')
+		except:
+			log (8,"groupinfo_request() self.sc.send exception")
+
+	def pcmstatus_request(self):
+		tornado.ioloop.IOLoop.current().add_timeout(time.time() + 110, lambda:self.pcmstatus_request())
+		try:
+			self.sc.send(b'pcmstatus 1\r\npcmstatus 2\r\npcmstatus 3\r\npcmstatus 4\r\npcmstatus 5\r\npcmstatus 6\r\npcmstatus 7\r\npcmstatus 8\r\npcmstatus 9\r\npcmstatus 10\r\npcmstatus 11\r\npcmstatus 12\r\npcmstatus 13\r\npcmstatus 14\r\npcmstatus 15\r\npcmstatus 16\r\npcmstatus 17\r\n')
+		except:
+			log (8,"pcmstatus_request() self.sc.send exception")
+
+	def recv_from_scomm(self, sock, fd ,events):
+		log(8,"recv_from_scomm()")
+		while True:
+			try:
+				data=sock.recv(2048)
+				if len(data)==0:
+					self.sc.close()
+					self.connect()
+					return
+			except socket.error as e:
+				if e.args[0] not in (errno.EWOULDBLOCK, errno.EAGAIN):
+					raise
+				return
+
+			data=data.decode('cp1251')
+			for string in data.split('\r\n'):
+				if len(string)!=0:
+					log(8,string)
+
+				r = re.search("^(CALL|SEIZ|RLSI|RLSO)",string)
+				if r:
+					calllog(string)
+					continue
+
+
+				r = re.search("(?<=Group) (\d+) - (\d+)/(\d+)",string)
+				if r:
+					self.groupinfo[r.group(1)]=r.group(2)+"/"+r.group(3)
+					if r.group(2)==r.group(3):
+						self.overload=1
+						act("group "+r.group(1),"act_overload")
+					self.groupinfo['_timestamp']=time.strftime("%s", time.localtime())
+					continue
+
+				r=re.search("(---|ERR) (\d+) (\w+) (\w+)",string)
+				if r:
+					log(8,"err:"+string)
+					self.pcmstatus[self.pcm]['errors'][r.group(4)]=r.group(2)
+					if r.group(1)=="ERR":
+						if self.pcmstatus[self.pcm]['status']!='down':
+						    self.pcmstatus[self.pcm]['status']="error"
+						if r.group(4)=="LOS" or r.group(4)=="RRA":
+							self.pcmstatus[self.pcm]['status']="down"
+
+				
+					continue
+
+				r = re.search("PCM (\d+) protected",string)
+				if r:
+					if self.pcm in self.pcmstatus and 'pstatus' in self.pcmstatus[self.pcm]:
+						if self.pcmstatus[self.pcm]['status']!=self.pcmstatus[self.pcm]['pstatus']:
+							if self.pcmstatus[self.pcm]['status']=='down':
+								act("pcm "+self.pcm,"act_down")
+							elif self.pcmstatus[self.pcm]['status']=='error':
+								act("pcm "+self.pcm,"act_error")
+							elif self.pcmstatus[self.pcm]['status']=='normal':
+								act("pcm "+self.pcm,"act_normal")
+							self.pcmstatus[self.pcm]['pstatus']=self.pcmstatus[self.pcm]['status']	
+
+					self.pcm=r.group(1)
+					self.pcmstatus[self.pcm]={}
+					self.pcmstatus[self.pcm]['status']="protected"
+					continue
+
+				r = re.search("PCM (\d+) status bits:",string)
+				if r:
+					if self.pcm in self.pcmstatus and 'pstatus' in self.pcmstatus[self.pcm]:				
+						if self.pcmstatus[self.pcm]['status']!=self.pcmstatus[self.pcm]['pstatus']:
+							if self.pcmstatus[self.pcm]['status']=='down':
+								act("pcm "+self.pcm,"act_down")
+							elif self.pcmstatus[self.pcm]['status']=='error':
+								act("pcm "+self.pcm,"act_error")
+							elif self.pcmstatus[self.pcm]['status']=='normal':
+								act("pcm "+self.pcm,"act_normal")
+							self.pcmstatus[self.pcm]['pstatus']=self.pcmstatus[self.pcm]['status']	
+
+					self.pcmstatus['_timestamp']=time.strftime("%s", time.localtime())
+					self.pcm=r.group(1)
+					if not self.pcm in self.pcmstatus:
+						self.pcmstatus[self.pcm]={}
+						self.pcmstatus[self.pcm]['pstatus']="normal";
+					self.pcmstatus[self.pcm]['errors']={}
+					self.pcmstatus[self.pcm]['status']="normal"
+					continue
+
+				r=re.search(">callon",string)
+				if r:
+					calllog("*** >callon ***")
+				r=re.search(">calloff",string)
+				if r:
+					calllog("*** >calloff ***")
+
+				r=re.search("Motor ([0-9.]+)",string)
+				if r:
+					cfg.cfg_D['m200']['motor']=r.group(1)
+					cfg.set('m200','motor',r.group(1))
+
+
+class scomm_hdl(tornado.web.RequestHandler):
+	def get(self):
+		global m200
+		self.set_header("Content-Type","application/json")
+		self.set_header("Access-Control-Allow-Origin","*")
+		ret={}
+		r=re.match('^/scomm/(start|stop)',self.request.uri)
+		if r:
+			if r.group(1)=="start":
+				if m200.scomm_start():
+					ret={"status":"started"}
+				else:
+					ret={"status":"not started"}
+			else:
+				if m200.scomm_stop():
+					ret={"status":"stopped"}
+				else:
+					ret={"status":"not stopped"}
+
+		self.write(json.dumps(ret))
+
+class index_hdl(tornado.web.RequestHandler):
+	def get(self):
+		self.render(cfg['path']['www']+"/index.html")
+
+class exit_hdl(tornado.web.RequestHandler):
+	def get(self):
+		log(1,"GET /exit request from ",self.request.remote_ip)
+		sys.exit(0)
+
+class cfg_hdl(tornado.web.RequestHandler):
+	def get(self):
+		self.set_header("Content-Type","application/json")
+		self.set_header("Access-Control-Allow-Origin","*")
+		self.write(str(cfg))
+
+class status_hdl(tornado.web.RequestHandler):
+	def get(self):
+		global m200
+		self.set_header("Content-Type","application/json")
+		self.set_header("Access-Control-Allow-Origin","*")
+
+		dest={}
+		dest['m200status']={"code":0,"descr":"normal"}
+		dest['_timestamp']=timestamp=time.strftime("%s", time.localtime())
+
+		if '_timestamp' in m200.scomm and int(m200.scomm['_timestamp'])<(int(timestamp)-15):
+			dest['scomm']={"_error":"scomm data is old"}
+			dest['m200status']={"code":-3,"descr":"scomm is most likely down"}
+		else:
+			dest['scomm']=m200.scomm
+			if 'Link' in m200.scomm and m200.scomm['Link']=='Down':
+				dest['m200status']={"code":-1,"descr":"scomm link is down"}
+        
+		if '_timestamp' in m200.groupinfo and int(m200.groupinfo['_timestamp'])<(int(timestamp)-30):
+			dest['groupinfo']={"_error":"groupinfo data is old"}
+		else:
+			dest['groupinfo']=m200.groupinfo
+        
+		if '_timestamp' in m200.pcmstatus and int(m200.pcmstatus['_timestamp'])<(int(timestamp)-120):
+			dest['pcmstatus']={"_error":"pcmstatus data is old"}
+		else:
+			dest['pcmstatus']=m200.pcmstatus
+        
+		if dest['m200status']['code']==0:
+			for pcm in m200.pcmstatus.keys():
+				if pcm=="_timestamp":
+					continue
+				if 'status' in m200.pcmstatus[pcm]:
+					if m200.pcmstatus[pcm]["status"]=="down":
+						dest['m200status']={"code":2,"descr":"pcm is down"}
+					if m200.pcmstatus[pcm]['status']=="error":
+						dest['m200status']={"code":1,"descr":"active error on pcm"}
+
+		if dest['m200status']['code']==0:
+			for gr in m200.groupinfo.keys():
+				if gr=="_timestamp":
+					continue
+				(t,b)=m200.groupinfo[gr].split('/')
+				if t==b:
+					dest['m200status']={"code":3,"descr":"group is full"}
+        
+		self.write(json.dumps(dest))
+
+class ws_cmd_hdl(tornado.websocket.WebSocketHandler):
+	global m200
+	clients={}
+	def open(self):
+		self.SCOMM_HOST='127.0.0.1'
+		self.SCOMM_PORT=10001
+		r=re.match('^/console/(\d+)/([0-9.]+)',self.request.uri)
+		if r:
+			self.SCOMM_HOST=r.group(2)
+			self.SCOMM_PORT=r.group(1)
+		else:
+			r=re.match('^/console/(\d+)',self.request.uri)
+			if r:
+				self.SCOMM_PORT=r.group(1)
+
+		log(1,"Console: new client connected: ",self.request.remote_ip," to ",self.SCOMM_HOST+":"+str(self.SCOMM_PORT))
+		self.__class__.clients.update({self.request.remote_ip:1})
+		m200.scomm['Console']=""
+		for k in self.__class__.clients.keys():
+			m200.scomm['Console']=m200.scomm['Console']+k+" "
+
+		try:
+			self.scomm = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.scomm.connect((self.SCOMM_HOST,int(self.SCOMM_PORT)))
+			self.scomm.setblocking(0)
+		except ConnectionRefusedError:
+			self.write_message(bytes('WebSocket proxy: не удалось подключиться к '+self.SCOMM_HOST+':'+self.SCOMM_PORT+'\r\n','utf8'))
+			self.on_close()
+			self.close()
+			return
+
+		io_loop = tornado.ioloop.IOLoop.current()
+		callback = functools.partial(self.on_scomm_message, self.scomm)
+		io_loop.add_handler(self.scomm.fileno(), callback, io_loop.READ)
+
+	def on_scomm_message(self, sock, fd ,events):
+		while True:
+			try:
+				data=sock.recv(1024)
+				if len(data)==0:
+					self.close()
+					self.scomm.close()
+					return
+				data=data.decode('cp1251')
+
+				for str in data.split('\n'):
+					if len(str)!=0:
+						try:
+							self.write_message(str)
+						except:
+							self.close()
+							self.scomm.close()
+							return
+			except socket.error as e:
+				if e.args[0] not in (errno.EWOULDBLOCK, errno.EAGAIN):
+					raise
+				return
+
+	def on_message(self, message):
+		log(1,self.request.remote_ip," -> ",self.SCOMM_HOST+":"+str(self.SCOMM_PORT),": ",message)
+		self.scomm.send(bytes(message+'\r\n','cp1251'))
+
+	def on_close(self):
+		log(1,"Console: client disconnected: ",self.request.remote_ip," from ",self.SCOMM_HOST+":"+str(self.SCOMM_PORT))
+		self.__class__.clients.pop(self.request.remote_ip)
+		m200.scomm['Console']=""
+		for k in self.__class__.clients.keys():
+			print (k)
+			m200.scomm['Console']=m200.scomm['Console']+k+" "
+			print (m200.scomm['Console'])
+		self.scomm.close()
+
+
+if __name__ == "__main__":
+	if len(sys.argv) < 2:
+		sys.exit('Usage: %s [config_file]' % sys.argv[0])
+
+	cfg=ConfigParser(sys.argv[1])
+
+	calllog=Calllog()
+
+	log=Log()
+
+	atexit.register(exit)
+
+	app = tornado.web.Application([
+		(r"^/console.*", ws_cmd_hdl),
+		(r"^/status", status_hdl),
+		(r"^/scomm.*", scomm_hdl),
+		(r"^/exit", exit_hdl),
+		(r"^/cfg", cfg_hdl),
+		(r"^/$", index_hdl),
+		(r"^/(.*)", tornado.web.StaticFileHandler,{'path':cfg['path']['www']}),
+	],static_path=cfg['path']['www'])
+
+	m200=M200(cfg['scomm']['ip'],int(cfg['scomm']['port']),int(cfg['scomm']['infoport']),cfg['scomm']['protv'])
+
+	m200.scomm_start()
+
+	app.listen(port=int(cfg['web']['port']),address=cfg['web']['listen'])
+
+	tornado.ioloop.IOLoop.instance().start()

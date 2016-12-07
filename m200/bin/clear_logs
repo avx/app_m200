@@ -1,0 +1,13 @@
+#!/bin/sh
+
+ts=`date '+%s'`
+ttl=$(( 60 * 60 * 24 * 7 ))
+
+for file in /usr/local/m200/log/calls/*; do
+    if [ -f $file ]; then
+        fts=`stat -c %Y $file`
+	if [ $(($ts - $fts)) -ge $ttl ]; then
+		rm $file
+	fi
+    fi
+done

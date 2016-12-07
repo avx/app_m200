@@ -1,0 +1,8 @@
+#!/bin/sh
+
+(
+while true; do
+    ./m200srvmon4 >> /var/log/m200.log
+    sleep 10;
+done
+) &

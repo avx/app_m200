@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<head>
+    <meta charset="utf-8" />
+    <title></title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1"/>
+    <meta name="description" content="" />
+    <meta name="author" content="av" />
+    <meta name="viewport" content="width=device-width" />
+    <script type="text/javascript" src="jquery.js"></script>
+    <script src="jquery.mousewheel-min.js"></script>
+    <script src="jquery.terminal-min.js"></script>
+    <link href="jquery.terminal.css" rel="stylesheet"/>
+    <script type="text/javascript">
+<!--
+	var url="/status";
+	var loc = window.location, ws_url;
+	ws_url = "";
+
+	var group_table=0;
+	function upd() {
+  		var xhr=$.getJSON(url,function(data){
+			$("div#status").html("Status: "+data.m200status.descr);
+
+			if (data.m200status.code==-3) {
+		  		for (var pcm=1;pcm<17;pcm++) {
+					$("div#pcms>div#pcm"+pcm).attr('class','protected');
+					$("div#pcms>div#pcm"+pcm).attr('title','unknown');
+		  		}
+		  		$("table#groups").html("");
+		  		$("div#scomm").html(data.m200status.descr);
+		  		return;
+			}
+
+			for (var pcm in data.pcmstatus) {
+				$("div#pcms>div#pcm"+pcm).attr('class',data.pcmstatus[pcm].status);
+		  		$("div#pcms>div#pcm"+pcm).attr('title',data.pcmstatus[pcm].status);
+			}
+
+			var el=0;
+			for (var g in data.groupinfo) {
+		  		if (g=='_timestamp') continue;
+				el++;
+		  		var gi=data.groupinfo[g].split('/');
+                if (!group_table)
+					$("table#groups").append("<tr><td><div style='display: inline-block;' id=g"+g+"name>№"+g+"</div></td><td><div id=g"+g+"f style='display: inline-block; background: #00ff00;'><div id=g"+g+"u style='display: inline-block; background: #ff0000; text-align: right;'>0</div></div></td></tr>"); 
+                $("div#g"+g+"u").html(data.groupinfo[g]);
+                $("div#g"+g+"u").width(gi[0]*8);
+                $("div#g"+g+"f").width(gi[1]*8);
+			}
+
+			if (el>0) group_table=1;
+
+	        $("div#scomm").html("");
+
+			var sorted = [];
+			for(var key in data.scomm) sorted[sorted.length] = key;
+
+			for (var i in sorted.sort().reverse()) {
+		  		if (sorted[i]=='_timestamp') { 
+					data.scomm[sorted[i]]=(new Date(data.scomm[sorted[i]]*1000));
+		      		$("div#scomm").append("Date : "+data.scomm[sorted[i]]+"<br>");
+					continue;
+		  		}
+		  		if (sorted[i]=='LastLinkChanged') { 
+					data.scomm[sorted[i]]=(new Date(data.scomm[sorted[i]]*1000));
+		      		$("div#scomm").append("LinkChanged : "+data.scomm[sorted[i]]+"<br>");
+					continue;
+		  		}
+				$("div#scomm").append(sorted[i]+" : "+data.scomm[sorted[i]]+"<br>");
+			}
+        }).fail(function() { $("div#status").html("Status: <b style='color: red'>m200mon is down!</b>"); console.log("can't get"); });
+	}
+
+	function cfg() {
+  		var xhr=$.getJSON('/cfg',function(data){
+			ws_url = "ws://" + loc.host + "/console/"+data.scomm_port;
+			$("span#caption").html(data.caption);
+			$("span#m200ip").html(data.m200_ip);
+			$("span#scomm_url").html(data.scomm_host+":"+data.scomm_port);
+			document.title="M200."+data.title;
+			for (i=1;i<=data.pcms;i++) {
+				$("div#pcms").append("<div id='pcm"+i+"' class='protected'>"+i+"</div>");
+			}
+        }).fail(function() { })
+	}
+
+
+	String.prototype.strip = function(char) {
+  		return this.replace(new RegExp("^" + char + "*"), '').
+      		replace(new RegExp(char + "*$"), '');
+	}
+
+
+	$.extend_if_has = function(desc, source, array) {
+  		for (var i=array.length;i--;)
+      		if (typeof source[array[i]] != 'undefined') 
+          		desc[array[i]] = source[array[i]];
+  		return desc;
+	};
+
+	(function($) {
+    	$.fn.tilda = function(eval, options) {
+      		if ($('body').data('tilda'))
+          		return $('body').data('tilda').terminal;
+	
+	        this.addClass('tilda');
+  		    options = options || {};
+      		eval = eval || function(command, term) { term.echo("you don't set eval for tilda"); };
+
+      		var settings = {
+          		prompt: '> ',
+          		name: 'tilda',
+          		height: $(document).height()-46,
+    	  		outputLimit: 1024,
+          		enabled: false,
+          		greetings: '',
+          		keypress: function(e) {
+              		if (e.which == 96 || e.which == 1105)
+                  		return false;
+          		}
+      		};
+
+      		if (options)
+          		$.extend(settings, options);
+
+      		this.prepend('<div class="td"></div>');
+      		var self = this;
+      		self.terminal = this.find('.td').terminal(eval, settings);
+      		var focus = false;
+      		$(document.documentElement).keypress(function(e) {
+//				console.log(e.which)
+          		if (e.which == 96 || e.which == 1105) {
+					if (!ws) connect();
+              		self.slideToggle('fast');
+              		self.terminal.focus(focus = !focus);
+              		self.terminal.attr({scrollTop: self.terminal.attr("scrollHeight")});
+          		}
+      		});
+      		$('body').data('tilda', this);
+      		this.hide();
+      		return self;
+  		};
+	})(jQuery);
+
+    var wait_done=0;
+	var own_command=0;
+
+	function connect() {
+		ws = new WebSocket(ws_url,'ws');
+		ws.onopen = function() { if (ws_connected!=1) terminal.echo("\x1b[1;31mConnection opened...");  ws_connected=1; terminal.resume(); };
+		ws.onclose = function() { if (ws_connected!=0) { terminal.echo("\x1b[1;31mConnection closed..."); ws_connected=0; terminal.pause(); } setTimeout("connect()",15000); };
+		ws.onmessage = function(evt) { 
+			if (own_command) {
+			  terminal.echo(evt.data);
+			}
+			else {
+			  if (evt.data.search(/^>(\w)/)==0) {
+				wait_done=1;
+				console.log("wait_done=1");
+			  }
+			  if (!wait_done && evt.data.length!=2) {
+				terminal.echo(evt.data);
+			  }
+			}
+			if (evt.data.search(/Done/)==0 || evt.data.search(/Bad command/)==0) { 
+			  wait_done=0; 
+			  if (own_command) own_command=0; 
+			  console.log("wait_done=0, own_command=0;"); 
+			}
+		};
+	}
+
+	var ws_connected=2;
+	var ws;
+	var terminal;
+	var M200_CMDLINE_STOP_LIST=['@@','@','reset','set_ip','set_mask','set_mac','set_gate','reinit_tcp','killcfg','killtune','reset','shutdown','setnumber','setactivecfg','importcfg'];
+	var M200_CMDLINE_ALIAS_LIST={'Reset!':'reset','Shutdown!':'shutdown'};
+
+
+    $(document).ready(function(){
+		$.ajaxSetup({cache:false});
+		cfg();
+	    upd();
+        setInterval('upd()',15000);
+  		$('#tilda').tilda(function(command, term) {
+      		term.pause();
+			var done=0;
+			for (var alias in M200_CMDLINE_ALIAS_LIST) {
+				if (command==alias) {
+				  own_command=1;
+        		  ws.send(M200_CMDLINE_ALIAS_LIST[command]+'\r\n');
+				  done=1;
+				  break;
+				}
+			}
+			if (!done)
+			  for (var cmd in M200_CMDLINE_STOP_LIST) {
+				  if (command.search(M200_CMDLINE_STOP_LIST[cmd])==0) {
+					terminal.echo("\x1b[1;31mВыполнение данной команды запрещено");
+					done=1;
+					break;
+				  }
+			  }
+
+			if (!done)  {
+                if (command.length > 1) own_command=1;
+				ws.send(command);
+			}
+			term.resume();
+        },{
+            greetings: "",
+            prompt: "> "});
+  		terminal=$('body').data('tilda').terminal;
+	});
+
+-->
+	</script>
+	<style>
+	body { text-align: left; font-family: Ubuntu, Verdana, Tahoma, Arial, sans-serif; margin-top: 0px;}
+	h2 { margin-top:10px;}
+	p { margin-top: 0.1em; margin-bottom: 0em; }
+	.normal { font-weight: bold; vertical-align: middle; border: solid 5px #00ff00; display: inline-block; width: 20px; height: 20px; margin-left: 15px; margin-right:15px; background: #00ff00; text-align: center; vertical-align: bottom; }
+	.down {font-weight: bold; border: solid 5px #ff0000; display: inline-block; width: 20px; height: 20px;margin-left: 15px; margin-right:15px; background: #ff0000; text-align: center; vertical-align: bottom; }
+	.error {font-weight: bold; border: solid 5px #00ff00; display: inline-block; width: 20px; height: 20px;margin-left: 15px; margin-right:15px; background: #ff0000; text-align: center; vertical-align: bottom; }
+	.protected {font-weight: bold; border: solid 5px #777777; display: inline-block; width: 20px; height: 20px; margin-left: 15px; margin-right:15px; background: #777777; text-align: center; vertical-align: bottom; }
+	</style>
+</head>
+<body>
+<div id="tilda"></div>
+<h2>M200 <span id="caption"></span> | <span id="m200ip"></span> | scomm @ <span id="scomm_url"></span></h2>
+<h4>Потоки E1:</h4>
+<div id="pcms"></div>
+<h4>Группы КИ:</h4>
+<table id="groups"></table>
+<h4>SCOMM:</h4>
+<div id="scomm"></div>
+<div id="status" style="background-color: #dfdfdf; position: fixed; bottom: 0px; height: 25px; left:0px; width: 100%; padding-left: 10px; font-weight: bold;"></div>
+</body>
+</html>

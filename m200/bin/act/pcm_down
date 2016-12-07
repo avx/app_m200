@@ -1,0 +1,15 @@
+#!/bin/sh
+
+exit 0;
+city="ARM"
+m200="10..0.200"
+url="http://10..0.6:6200"
+exit;
+sendmail m200 << EOF 
+From: M200 MONITOR <no-reply@enforta.com>
+Subject: $city $m200 PCM $1 IS DOWN
+
+pcm $1 is down!
+---
+$url
+EOF

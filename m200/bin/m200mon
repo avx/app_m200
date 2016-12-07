@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# m200mon        m200mon
+#
+# chkconfig: - 85 15
+# description: m200srv
+. /etc/rc.d/init.d/functions
+
+start() {
+	touch /var/run/m200srv.rc
+	for cfg_file in /usr/local/m200/etc/*.ini; do
+	    if [ -f $cfg_file ]; then
+		(
+			i=1;
+			while true; do
+				before=`date '+%Y%m%d%H%M%S'`
+				/usr/local/m200/bin/m200srv $cfg_file
+				test -f  /var/run/m200srv.rc
+	        	if [ $? -ne 0 ]; then
+					exit 0;
+				fi
+        		after=`date '+%Y%m%d%H%M%S'`
+        		if [ $((after-before)) -le 15 ]; then
+            		# to fast 
+            		sleep 30;
+        		fi;
+        		i=$((i+1));
+			done; 
+		) &
+	    fi
+	done
+}
+
+stop() {
+	rm /var/run/m200srv.rc
+	restart
+}
+
+restart() {
+	killall m200srv
+	killall scomm
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	restart
+	;;
+  *)
+	echo $"Usage: $prog {start|stop|restart}"
+	exit 1
+esac
